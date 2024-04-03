@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"github.com/adrg/frontmatter"
 	"github.com/yuin/goldmark"
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
 	"html/template"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 )
 
 type SlugReader interface {
@@ -18,10 +20,16 @@ type SlugReader interface {
 type FileReader struct {
 }
 
-type PostData struct {
-	Title   string
+type Post struct {
+	Title   string `toml:"title"`
+	Slug    string `toml:"slug"`
 	Content template.HTML
-	Author  string
+	Author  Author `toml:"author"`
+}
+
+type Author struct {
+	Name  string `toml:"name"`
+	Email string `toml:"email"`
 }
 
 func (fsr FileReader) Read(slug string) (string, error) {
@@ -41,12 +49,20 @@ func (fsr FileReader) Read(slug string) (string, error) {
 
 func PostHandler(sl SlugReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		slug := r.PathValue("slug")
-		postMarkdown, err := sl.Read(slug)
+		var post Post
+		post.Slug = r.PathValue("slug")
+		postMarkdown, err := sl.Read(post.Slug)
 		if err != nil {
 			// TODO: handle error
 			log.Printf("error: %v", err)
 			http.Error(w, "Post not found", http.StatusNotFound)
+			return
+		}
+
+		postDataResponse, err := frontmatter.Parse(strings.NewReader(postMarkdown), &post)
+		if err != nil {
+			log.Printf("error: %v", err)
+			http.Error(w, "Error parsing frontmatter information", http.StatusInternalServerError)
 			return
 		}
 
@@ -59,7 +75,7 @@ func PostHandler(sl SlugReader) http.HandlerFunc {
 		)
 
 		var buf bytes.Buffer
-		err = mdRenderer.Convert([]byte(postMarkdown), &buf)
+		err = mdRenderer.Convert(postDataResponse, &buf)
 		if err != nil {
 			log.Printf("error: %v", err)
 			http.Error(w, "Error converting markdown", http.StatusInternalServerError)
@@ -68,19 +84,13 @@ func PostHandler(sl SlugReader) http.HandlerFunc {
 
 		tpl, err := template.ParseFiles("post.gohtml")
 		if err != nil {
+			log.Printf("error: %v", err)
 			http.Error(w, "Error parsing template", http.StatusInternalServerError)
 			return
 		}
 
-		err = tpl.Execute(w, PostData{
-			Title:   "My First Post",
-			Content: template.HTML(buf.String()),
-			Author:  "Leo Gutiérrez",
-		})
-
-		if err != nil {
-			log.Printf("error: %v", err)
-		}
+		post.Content = template.HTML(buf.String())
+		err = tpl.Execute(w, post)
 	}
 }
 
